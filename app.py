@@ -10,9 +10,9 @@ Flujo:
 """
 import os
 import re
+import sys
 import threading
 import time
-import logging
 
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -20,8 +20,13 @@ from twilio.twiml.messaging_response import MessagingResponse
 from parser import cargar_folios, formatear_respuesta
 from drive import descargar_export_mas_reciente
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("bot-folios")
+
+def log(mensaje):
+    """Imprime directo a stdout con flush inmediato, para que siempre
+    aparezca en los logs de Render sin importar cómo gunicorn configure
+    el sistema de logging estándar de Python."""
+    print(mensaje, flush=True)
+
 
 app = Flask(__name__)
 
@@ -34,6 +39,7 @@ INTERVALO_ACTUALIZACION_SEGUNDOS = int(os.environ.get("INTERVALO_ACTUALIZACION_S
 
 def actualizar_datos():
     """Descarga el export más reciente de Drive y recarga los folios en memoria."""
+    log("Iniciando actualización de datos desde Drive...")
     try:
         ruta, nombre, modificado = descargar_export_mas_reciente()
         folios = cargar_folios(ruta)
@@ -41,9 +47,9 @@ def actualizar_datos():
             _estado["folios"] = folios
             _estado["ultima_actualizacion"] = time.strftime("%d/%m %H:%M")
             _estado["archivo_origen"] = nombre
-        log.info(f"Datos actualizados: {len(folios)} folios cargados desde '{nombre}'")
+        log(f"OK: {len(folios)} folios cargados desde '{nombre}'")
     except Exception as e:
-        log.error(f"Error actualizando datos desde Drive: {e}")
+        log(f"ERROR actualizando datos desde Drive: {type(e).__name__}: {e}")
 
 
 def hilo_actualizacion_periodica():
@@ -91,13 +97,16 @@ def status():
         }
 
 
+# --- Arranque del refresco de datos ---
+# Esto corre siempre al importar el módulo (tanto con gunicorn en Render
+# como al ejecutar "python app.py" en local), para que la primera carga
+# y el hilo de actualización periódica no dependan de cómo se inicie el servidor.
+log("Arrancando módulo app.py — iniciando carga de datos...")
+actualizar_datos()
+hilo = threading.Thread(target=hilo_actualizacion_periodica, daemon=True)
+hilo.start()
+
+
 if __name__ == "__main__":
-    # Primera carga antes de aceptar tráfico
-    actualizar_datos()
-
-    # Hilo en segundo plano que refresca los datos periódicamente
-    hilo = threading.Thread(target=hilo_actualizacion_periodica, daemon=True)
-    hilo.start()
-
     puerto = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=puerto)
